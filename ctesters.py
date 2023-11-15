@@ -247,6 +247,19 @@ class TestTool:
 
         cmdline = self._tool_module_obj.cmdline(self._executable, options or self.options, task, rlimits)
 
+        #Change director to tool directory to work with relative paths
+        tool_directory_path = os.path.join(self.tool_name, self.version, self.tool_name)
+        try:
+            ctesters_tool_directory_path = os.path.join("./cache/", tool_directory_path)
+            os.chdir(ctesters_tool_directory_path)
+        except:
+            print("Could not change directory to " + ctesters_tool_directory_path + ". Ignore if running PeSCo")
+        try:
+            pesco_tool_directory_path = os.path.join("./lib/", tool_directory_path)
+            os.chdir(pesco_tool_directory_path)
+        except:
+            print("Could not change directory to " + pesco_tool_directory_path)
+
         if not rlimits.empty() and not rlimits.accessed:
             logger.warning("Tester does not support setting limits")
 
