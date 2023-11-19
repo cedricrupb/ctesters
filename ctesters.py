@@ -290,7 +290,10 @@ class TestTool:
         if not target_dir: target_dir = os.path.join(".", output_dir)
 
         if os.path.exists(target_dir):
-            shutil.rmtree(target_dir) 
+            if not os.path.isdir(target_dir):
+                os.remove(target_dir)
+            else:
+                shutil.rmtree(target_dir) 
         
         try:
             shutil.move(tool_output_dir, target_dir)
