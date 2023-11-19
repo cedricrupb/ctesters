@@ -6,10 +6,14 @@ import zipfile
 
 import importlib.util
 import sys
+import shutil
 
 import signal
 import subprocess
+import time
+import contextlib
 
+from glob import glob
 from utils import main, download
 
 import benchexec.result
@@ -31,7 +35,8 @@ def test(tool_name : str,
         container : bool = False,
         enforce_limits : bool = False,
         property_file : str = "properties/coverage-error-call.prp",
-        tool_directory : str = None):
+        tool_directory : str = None,
+        witness : str = None):
     """Help"""
 
     tool = load_tool(tool_name, version)
@@ -56,10 +61,14 @@ def test(tool_name : str,
     elif result == benchexec.result.RESULT_DONE:
         print("Result: DONE, tester explored all executable paths.")
     elif result == benchexec.result.RESULT_FALSE_REACH:
+        tool.move_output("test-suite")
         print("Result: false(unreach-call), tester found an executable path to an error location.")
         print("Results can be found in test-suite/")
     else:
         print(result)
+    
+    if witness:
+        tool.move_output("*.graphml", witness)
     
     return result
 
@@ -177,10 +186,10 @@ class TestTool:
             memlimit = memory
         )
 
-        if not os.path.exists(output): return Run([])
+        if not os.path.exists(output): return Run(RunOutput([]))
 
         with open(output, "r") as i:
-            result = Run(i.readlines())
+            result = Run(RunOutput(i.readlines()))
         
         os.remove(output)
         return result
@@ -197,7 +206,14 @@ class TestTool:
             if memory is not None:
                 cmdline = ["ulimit", "-Sv", str(int(0.9 * memory / 1024)), "&&"] + cmdline
 
-        return execute(cmdline)
+        start_time = time.time()
+        run = execute(cmdline)
+        elapsed = time.time() - start_time
+
+        if timelimit is not None and timelimit < elapsed:
+            run.was_timeout = True
+
+        return run
 
 
     def init(self, base_dir = None):
@@ -219,6 +235,9 @@ class TestTool:
         self._executable = self._tool_module_obj.executable(
             BaseTool2.ToolLocator(os.path.join(self.location, self.tool_name), False, False)
         )
+
+        self._tool_location = os.path.join(self.location, self.tool_name)
+
 
     def test(self, program_path, 
                 data_model = "LP64", 
@@ -252,11 +271,32 @@ class TestTool:
 
         logger.debug("Execute the following command: %s" % " ".join(cmdline))
 
-        run = self._execute(cmdline, timelimit = rlimits.cputime, memory = rlimits.memory)
-        result = self._tool_module_obj.determine_result(run)
-        
-        return result
+        with _change_working_directory(self._tool_location):
+            run = self._execute(cmdline, timelimit = rlimits.cputime, memory = rlimits.memory)
 
+        result = self._tool_module_obj.determine_result(run)
+            
+        return result
+    
+    def move_output(self, output_dir, target_dir = None):
+        tool_output_dir = os.path.join(self._tool_location, output_dir)
+
+        if "*" in tool_output_dir:
+            for path in glob(tool_output_dir):
+                tool_output_dir = path
+                break
+
+        if not os.path.exists(tool_output_dir): return False
+        if not target_dir: target_dir = os.path.join(".", output_dir)
+
+        if os.path.exists(target_dir):
+            shutil.rmtree(target_dir) 
+        
+        try:
+            shutil.move(tool_output_dir, target_dir)
+            return True
+        except Exception:
+            return False
 
     def __repr__(self):
         result = "%s[%s]" % (self.tool_name, self.version)
@@ -290,9 +330,17 @@ class RLimits:
 
 # Executor --------------------------------
 
+class RunOutput(list):
+    
+    def any_line_contains(self, key):
+        for line in self:
+            if key in line: return True
+        return False
+
 class Run:
-    def __init__(self, output):
+    def __init__(self, output, was_timeout = False):
         self.output = output
+        self.was_timeout = was_timeout
 
 def execute(cmdline):
     p = subprocess.Popen(" ".join(cmdline), stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell = True)
@@ -312,7 +360,7 @@ def execute(cmdline):
     except:
         pass
 
-    return Run(lines)
+    return Run(RunOutput(lines))
 
 # Path helper -------------------------------------------------------------
 
@@ -321,6 +369,18 @@ BASE_DIR = os.path.dirname(os.path.realpath(__file__))
 def _resolve_path(path):
     if os.path.exists(path): return path
     return os.path.join(BASE_DIR, path)
+
+
+@contextlib.contextmanager
+def _change_working_directory(target_directory):
+    d = os.getcwd()
+    os.chdir(target_directory)
+
+    try:
+        yield
+
+    finally:
+        os.chdir(d)
 
 # Runner -------------------------------------------------------------------
 
